@@ -19,9 +19,10 @@ await app.register(cookie);
 await app.register(rateLimit,{max:100,timeWindow:'1 minute'});
 app.setErrorHandler((error,request,reply)=>{
  if(error instanceof ZodError)return reply.status(400).send({error:'VALIDATION_ERROR',issues:error.issues});
- const status=Number(error.statusCode)||500;
- request.log.error(error);
- return reply.status(status).send({error:status>=500?'INTERNAL_ERROR':error.message});
+ const failure = error as Error & {statusCode?: number};
+ const status=Number(failure.statusCode)||500;
+ request.log.error(failure);
+ return reply.status(status).send({error:status>=500?'INTERNAL_ERROR':failure.message});
 });
 const body=<T extends z.ZodTypeAny>(schema:T,req:FastifyRequest):z.infer<T>=>schema.parse(req.body);
 const emailSchema=z.email().transform(v=>v.trim().toLowerCase());
