@@ -49,7 +49,7 @@ app.addHook('onError', async (req, _reply, error) => {
   errorType:error.name,statusCode:error.statusCode ?? 500,requestId:req.id},'request error');
 });
 await app.register(helmet);
-await app.register(cors,{origin:env.CORS_ORIGIN,credentials:true});
+await app.register(cors,{origin:env.CORS_ORIGIN,credentials:true,methods:['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS']});
 await app.register(cookie);
 await app.register(rateLimit,{max:100,timeWindow:'1 minute'});
 app.setErrorHandler((error,request,reply)=>{
