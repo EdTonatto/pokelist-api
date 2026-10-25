@@ -4,8 +4,7 @@ services:
     runtime: node
     plan: free
     buildCommand: npm install && npx prisma generate && npm run build
-    preDeployCommand: npx prisma migrate deploy
-    startCommand: npm start
+    startCommand: npx prisma migrate deploy && npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
@@ -41,3 +40,4 @@ databases:
     plan: free
     databaseName: pokelist
     user: pokelist
+    ipAllowList: []
