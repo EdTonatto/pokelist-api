@@ -13,6 +13,9 @@ import { sendLink } from './mail.js';
 import { closeCache } from './cache.js';
 import { operationEvent, safePath } from './logging.js';
 
+function step(req:FastifyRequest, name:string, details:Record<string,string|number|boolean>={}) {
+ req.log.info({event:'endpoint.step',step:name,requestId:req.id,route:safePath(req.routeOptions.url ?? req.url),...details},'endpoint step');
+}
 const app=Fastify({
  logger: {
   level: env.LOG_LEVEL,
@@ -24,6 +27,12 @@ const app=Fastify({
  },
  disableRequestLogging: true,
  trustProxy: true
+});
+app.addHook('onRequest', async req => {
+ step(req,'request.received',{method:req.method});
+});
+app.addHook('preHandler', async req => {
+ step(req,'request.routed',{method:req.method});
 });
 app.addHook('onResponse', async (req, reply) => {
  const route = req.routeOptions.url ?? safePath(req.url);
@@ -63,12 +72,15 @@ function assertOrigin(req:FastifyRequest){
  if(!origin||!env.CORS_ORIGIN.includes(origin))throw Object.assign(new Error('Invalid request origin'),{statusCode:403});
 }
 async function currentUser(req:FastifyRequest){
+ step(req,'auth.token.check');
  const token=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
  if(!token)throw Object.assign(new Error('Unauthorized'),{statusCode:401});
  try {
   const id=await verifyAccess(token);
+  step(req,'auth.token.verified');
   const user=await db.user.findUnique({where:{id}});
   if(!user)throw new Error();
+  step(req,'auth.user.loaded');
   return user;
  }catch {throw Object.assign(new Error('Unauthorized'),{statusCode:401});}
 }
@@ -95,12 +107,16 @@ app.get('/ready',async()=>{await db.$queryRaw`SELECT 1`;return {status:'ready'};
 
 app.post('/api/v1/auth/register',{config:{rateLimit:{max:5,timeWindow:'1 minute'}}},async(req,reply)=>{
  const data=body(signup,req);
+ step(req,'register.input.validated');
+ step(req,'register.email.uniqueness_check');
  if(await db.user.findUnique({where:{email:data.email}}))return reply.code(409).send({error:'EMAIL_ALREADY_REGISTERED'});
+ step(req,'register.user.creation_started');
  const user=await db.user.create({
   data:{email:data.email,passwordHash:await argon2.hash(data.password),displayName:data.displayName,
    emailVerifiedAt:new Date(),
    memberships:{create:{role:'OWNER',space:{create:{name:'Meu espaço'}}}}}
  });
+ step(req,'register.user.created');
  return reply.code(201).send({message:'Account created',accessToken:await session(user.id,reply),user:publicUser(user)});
 });
 app.post('/api/v1/auth/verify-email',async(req,reply)=>{
@@ -125,29 +141,39 @@ app.post('/api/v1/auth/resend-verification',{config:{rateLimit:{max:3,timeWindow
 });
 app.post('/api/v1/auth/login',{config:{rateLimit:{max:5,timeWindow:'1 minute'}}},async(req,reply)=>{
  const {email,password}=body(credentials,req);
+ step(req,'login.input.validated');
  const user=await db.user.findUnique({where:{email}});
+ step(req,'login.user.lookup_completed',{found:!!user});
  if(!user||!(await argon2.verify(user.passwordHash,password)))return reply.code(401).send({error:'INVALID_CREDENTIALS'});
+ step(req,'login.password.verified');
  // Previously registered users may not have a space because verification never completed.
  if(!(await db.spaceMember.findFirst({where:{userId:user.id}}))) {
   await db.space.create({data:{name:'Meu espaço',members:{create:{userId:user.id,role:'OWNER'}}}});
  }
+ step(req,'login.session.creating');
  return {accessToken:await session(user.id,reply),user:publicUser(user)};
 });
 app.post('/api/v1/auth/refresh',async(req,reply)=>{
  assertOrigin(req);
+ step(req,'auth.origin.validated');
  const token=req.cookies[cookieName];
+ step(req,'refresh.session.lookup');
  const existing=token?await db.session.findUnique({where:{tokenHash:hashToken(token)}}):null;
  if(!existing||existing.revokedAt||existing.expiresAt<new Date())return reply.code(401).send({error:'UNAUTHORIZED'});
+ step(req,'refresh.session.revoking');
  const changed=await db.session.updateMany({where:{id:existing.id,revokedAt:null},data:{revokedAt:new Date()}});
  if(changed.count!==1)return reply.code(401).send({error:'UNAUTHORIZED'});
  const user=await db.user.findUnique({where:{id:existing.userId}});
  if(!user)return reply.code(401).send({error:'UNAUTHORIZED'});
+ step(req,'refresh.session.rotating');
  return {accessToken:await session(user.id,reply),user:publicUser(user)};
 });
 app.post('/api/v1/auth/logout',async(req,reply)=>{
  assertOrigin(req);
  const token=req.cookies[cookieName];
+ step(req,'logout.session.revoking',{hasCookie:!!token});
  if(token)await db.session.updateMany({where:{tokenHash:hashToken(token)},data:{revokedAt:new Date()}});
+ step(req,'logout.cookie.clearing');
  reply.clearCookie(cookieName,{path:'/api/v1/auth'});
  return {message:'Logged out'};
 });
@@ -191,6 +217,7 @@ async function loadList(userId:string,id:string,edit=false){
 }
 app.get('/api/v1/spaces',async req=>{
  const user=await currentUser(req);
+ step(req,'spaces.query');
  return db.space.findMany({where:{members:{some:{userId:user.id}}},include:{members:{select:{userId:true,role:true}}}});
 });
 app.post('/api/v1/spaces',async(req,reply)=>{
@@ -207,11 +234,14 @@ app.get('/api/v1/spaces/:id/members',async req=>{
 const listInput=z.object({spaceId:uuid,name:z.string().trim().min(1).max(120),description:z.string().max(1000).optional(),type:z.enum(['COLLECTION','POKEMON','CUSTOM']).default('CUSTOM'),setId:z.string().optional(),pokemonName:z.string().optional()});
 app.get('/api/v1/wishlists',async req=>{
  const user=await currentUser(req);
+ step(req,'wishlists.query');
  return db.wishlist.findMany({where:{space:{members:{some:{userId:user.id}}}},include:{_count:{select:{items:true}}},orderBy:{updatedAt:'desc'}});
 });
 app.post('/api/v1/wishlists',async(req,reply)=>{
  const user=await currentUser(req), input=body(listInput,req);
  canEdit((await membership(user.id,input.spaceId)).role);
+ step(req,'wishlist.permission.checked');
+ step(req,'wishlist.insert');
  return reply.code(201).send(await db.wishlist.create({data:{...input,createdBy:user.id}}));
 });
 app.get('/api/v1/wishlists/:id',async req=>{
@@ -222,12 +252,15 @@ app.get('/api/v1/wishlists/:id',async req=>{
 app.patch('/api/v1/wishlists/:id',async req=>{
  const user=await currentUser(req),id=uuid.parse((req.params as any).id);
  await loadList(user.id,id,true);
+ step(req,'wishlist.permission.checked');
  const data=body(listInput.omit({spaceId:true}).partial(),req);
+ step(req,'wishlist.update');
  return db.wishlist.update({where:{id},data});
 });
 app.delete('/api/v1/wishlists/:id',async req=>{
  const user=await currentUser(req),id=uuid.parse((req.params as any).id);
  await loadList(user.id,id,true);
+ step(req,'wishlist.delete');
  await db.wishlist.delete({where:{id}});return {deleted:true};
 });
 const itemSchema=z.object({provider:z.literal('tcgdex').default('tcgdex'),providerCardId:z.string().min(1),cardName:z.string().min(1),localId:z.string().min(1),setId:z.string().min(1),setName:z.string().min(1),setOfficialTotal:z.number().int().positive().nullable().optional(),imageUrl:z.url().nullable().optional(),language:z.string().default('pt-br'),notes:z.string().max(1000).optional()});
@@ -261,29 +294,35 @@ app.delete('/api/v1/wishlists/:id/items/:itemId',async req=>{
 });
 app.get('/api/v1/cards',async req=>{
  const {name,language,page}=z.object({name:z.string().trim().min(1).max(120),language:z.enum(['pt-br','en']).default('pt-br'),page:z.coerce.number().int().min(1).default(1)}).parse(req.query);
+ step(req,'catalog.search.start',{page});
  return catalog.search(name,language,page);
 });
 app.get('/api/v1/cards/printed-number',async req=>{
  const {localId,total,language}=z.object({localId:z.string().min(1).max(10),total:z.coerce.number().int().positive(),language:z.enum(['pt-br','en']).default('pt-br')}).parse(req.query);
+ step(req,'catalog.number_lookup.start');
  return catalog.byNumber(localId,total,language);
 });
 app.get('/api/v1/cards/:id',async req=>{
  const {id}=z.object({id:z.string().min(1)}).parse(req.params);
  const {language}=z.object({language:z.enum(['pt-br','en']).default('pt-br')}).parse(req.query);
+ step(req,'catalog.card_lookup.start');
  return catalog.card(id,language);
 });
 app.get('/api/v1/sets',async req=>{
  const {language}=z.object({language:z.enum(['pt-br','en']).default('pt-br')}).parse(req.query);
+ step(req,'catalog.sets_lookup.start');
  return catalog.sets(language);
 });
 app.get('/api/v1/sets/:id',async req=>{
  const {id}=z.object({id:z.string().min(1)}).parse(req.params);
  const {language}=z.object({language:z.enum(['pt-br','en']).default('pt-br')}).parse(req.query);
+ step(req,'catalog.set_lookup.start');
  return catalog.set(id,language);
 });
 app.get('/api/v1/sets/:id/cards',async req=>{
  const {id}=z.object({id:z.string().min(1)}).parse(req.params);
  const {language}=z.object({language:z.enum(['pt-br','en']).default('pt-br')}).parse(req.query);
+ step(req,'catalog.set_cards_lookup.start');
  const set=await catalog.set(id,language) as any;
  return set.cards??[];
 });
