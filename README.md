@@ -40,3 +40,8 @@ The frontend lives on github.io while Render runs on a different site: third-par
 - Configure Resend domain and frontend auth pages, HTTPS cookie/CORS behavior, and a backup policy.
 - Add coordinated verification/token issuance transaction handling, abuse-resistant distributed login limits and observability.
 - This repository does **not** provision resources on your Render account automatically; sync the Blueprint in Render.
+
+
+## Logs e observabilidade
+
+A API envia logs JSON para stdout/stderr, capturados automaticamente no painel Render → pokelist-api → Logs. Defina `LOG_LEVEL=info` (padrão), ou `debug` temporariamente para eventos de cache (hit/miss/erros). Cada operação HTTP inclui `event`, rota parametrizada, método, status, duração e `requestId`. Eventos de negócio incluem autenticação, operações em listas e consultas de catálogo. Os logs **não incluem** corpo de requisições, e-mail, senha, tokens, authorization/cookies, parâmetros de busca nem chaves completas do Redis. Restrições de volume e retenção obedecem ao plano Render; não há tabela de auditoria permanente no PostgreSQL.

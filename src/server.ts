@@ -11,8 +11,34 @@ import { hashToken,newToken,accessToken,verifyAccess,publicUser } from './securi
 import { catalog } from './catalog.js';
 import { sendLink } from './mail.js';
 import { closeCache } from './cache.js';
+import { operationEvent, safePath } from './logging.js';
 
-const app=Fastify({logger:true,trustProxy:true});
+const app=Fastify({
+ logger: {
+  level: env.LOG_LEVEL,
+  redact: {
+   paths: ['req.headers.authorization','req.headers.cookie','res.headers["set-cookie"]',
+    'password','token','accessToken','refreshToken','DATABASE_URL','REDIS_URL'],
+   censor: '[REDACTED]'
+  }
+ },
+ disableRequestLogging: true,
+ trustProxy: true
+});
+app.addHook('onResponse', async (req, reply) => {
+ const route = req.routeOptions.url ?? safePath(req.url);
+ const event = operationEvent(req.method,route,reply.statusCode);
+ const fields = {event: event ?? 'http.request', method:req.method,route:safePath(route),
+  statusCode:reply.statusCode,durationMs:Math.round(reply.elapsedTime),requestId:req.id};
+ if(reply.statusCode >= 500) req.log.error(fields,'request failed');
+ else if(reply.statusCode >= 400) req.log.warn(fields,'request rejected');
+ else if(event) req.log.info(fields,'operation completed');
+ else req.log.debug(fields,'request completed');
+});
+app.addHook('onError', async (req, _reply, error) => {
+ req.log.error({event:'http.error',route:safePath(req.routeOptions.url ?? req.url),method:req.method,
+  errorType:error.name,statusCode:error.statusCode ?? 500,requestId:req.id},'request error');
+});
 await app.register(helmet);
 await app.register(cors,{origin:env.CORS_ORIGIN,credentials:true});
 await app.register(cookie);
@@ -21,7 +47,7 @@ app.setErrorHandler((error,request,reply)=>{
  if(error instanceof ZodError)return reply.status(400).send({error:'VALIDATION_ERROR',issues:error.issues});
  const failure = error as Error & {statusCode?: number};
  const status=Number(failure.statusCode)||500;
- request.log.error(failure);
+ // Error details may include upstream payloads or secrets. The onError hook logs only safe metadata.
  return reply.status(status).send({error:status>=500?'INTERNAL_ERROR':failure.message});
 });
 const body=<T extends z.ZodTypeAny>(schema:T,req:FastifyRequest):z.infer<T>=>schema.parse(req.body);
@@ -73,7 +99,7 @@ app.post('/api/v1/auth/register',{config:{rateLimit:{max:5,timeWindow:'1 minute'
  const user=await db.user.create({data:{email:data.email,passwordHash:await argon2.hash(data.password),displayName:data.displayName}});
  const token=await createOneTime(user.id,'verify',86400000);
  try {await sendLink(user.email,'Confirme seu e-mail no PokeList','verify-email',token);}
- catch(error){req.log.error(error,'email dispatch failed');}
+ catch {req.log.error({event:'mail.delivery_failed',requestId:req.id},'verification email dispatch failed');}
  return reply.code(201).send({message:'Account created. Check your email to verify.',user:publicUser(user)});
 });
 app.post('/api/v1/auth/verify-email',async(req)=>{
