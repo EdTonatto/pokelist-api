@@ -1,0 +1,93 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+enum SpaceRole { OWNER EDITOR VIEWER }
+enum WishlistType { COLLECTION POKEMON CUSTOM }
+enum ItemStatus { WANTED ACQUIRED }
+model User {
+  id String @id @default(uuid()) @db.Uuid
+  email String @unique
+  passwordHash String
+  displayName String
+  emailVerifiedAt DateTime?
+  createdAt DateTime @default(now())
+  memberships SpaceMember[]
+  sessions Session[]
+  tokens OneTimeToken[]
+}
+model Space {
+  id String @id @default(uuid()) @db.Uuid
+  name String
+  createdAt DateTime @default(now())
+  members SpaceMember[]
+  wishlists Wishlist[]
+}
+model SpaceMember {
+  spaceId String @db.Uuid
+  userId String @db.Uuid
+  role SpaceRole
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([spaceId, userId])
+}
+model Wishlist {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  name String
+  description String?
+  type WishlistType @default(CUSTOM)
+  setId String?
+  pokemonName String?
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  items WishlistItem[]
+  @@index([spaceId])
+}
+model WishlistItem {
+  id String @id @default(uuid()) @db.Uuid
+  wishlistId String @db.Uuid
+  provider String @default("tcgdex")
+  providerCardId String
+  cardName String
+  localId String
+  setId String
+  setName String
+  setOfficialTotal Int?
+  imageUrl String?
+  language String @default("pt-br")
+  status ItemStatus @default(WANTED)
+  notes String?
+  addedBy String @db.Uuid
+  createdAt DateTime @default(now())
+  acquiredAt DateTime?
+  wishlist Wishlist @relation(fields: [wishlistId], references: [id], onDelete: Cascade)
+  @@unique([wishlistId, provider, providerCardId])
+  @@index([wishlistId, status])
+}
+model Session {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  tokenHash String @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
+}
+model OneTimeToken {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  tokenHash String @unique
+  purpose String
+  expiresAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, purpose])
+}

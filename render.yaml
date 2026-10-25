@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: pokelist-api
+    runtime: node
+    plan: free
+    buildCommand: npm install && npx prisma generate && npm run build
+    preDeployCommand: npx prisma migrate deploy
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pokelist-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: pokelist-cache
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: FRONTEND_URL
+        value: https://edtonatto.github.io/pokelist/
+      - key: CORS_ORIGIN
+        value: https://edtonatto.github.io
+      - key: RESEND_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: TCGDEX_BASE_URL
+        value: https://api.tcgdex.net/v2
+  - type: keyvalue
+    name: pokelist-cache
+    plan: free
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+databases:
+  - name: pokelist-postgres
+    plan: free
+    databaseName: pokelist
+    user: pokelist
