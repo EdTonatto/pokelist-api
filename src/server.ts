@@ -11,8 +11,34 @@ import { hashToken,newToken,accessToken,verifyAccess,publicUser } from './securi
 import { catalog } from './catalog.js';
 import { sendLink } from './mail.js';
 import { closeCache } from './cache.js';
+import { operationEvent, safePath } from './logging.js';
 
-const app=Fastify({logger:true,trustProxy:true});
+const app=Fastify({
+ logger: {
+  level: env.LOG_LEVEL,
+  redact: {
+   paths: ['req.headers.authorization','req.headers.cookie','res.headers["set-cookie"]',
+    'password','token','accessToken','refreshToken','DATABASE_URL','REDIS_URL'],
+   censor: '[REDACTED]'
+  }
+ },
+ disableRequestLogging: true,
+ trustProxy: true
+});
+app.addHook('onResponse', async (req, reply) => {
+ const route = req.routeOptions.url ?? safePath(req.url);
+ const event = operationEvent(req.method,route,reply.statusCode);
+ const fields = {event: event ?? 'http.request', method:req.method,route:safePath(route),
+  statusCode:reply.statusCode,durationMs:Math.round(reply.elapsedTime),requestId:req.id};
+ if(reply.statusCode >= 500) req.log.error(fields,'request failed');
+ else if(reply.statusCode >= 400) req.log.warn(fields,'request rejected');
+ else if(event) req.log.info(fields,'operation completed');
+ else req.log.debug(fields,'request completed');
+});
+app.addHook('onError', async (req, _reply, error) => {
+ req.log.error({event:'http.error',route:safePath(req.routeOptions.url ?? req.url),method:req.method,
+  errorType:error.name,statusCode:error.statusCode ?? 500,requestId:req.id},'request error');
+});
 await app.register(helmet);
 await app.register(cors,{origin:env.CORS_ORIGIN,credentials:true});
 await app.register(cookie);
@@ -21,7 +47,7 @@ app.setErrorHandler((error,request,reply)=>{
  if(error instanceof ZodError)return reply.status(400).send({error:'VALIDATION_ERROR',issues:error.issues});
  const failure = error as Error & {statusCode?: number};
  const status=Number(failure.statusCode)||500;
- request.log.error(failure);
+ // Error details may include upstream payloads or secrets. The onError hook logs only safe metadata.
  return reply.status(status).send({error:status>=500?'INTERNAL_ERROR':failure.message});
 });
 const body=<T extends z.ZodTypeAny>(schema:T,req:FastifyRequest):z.infer<T>=>schema.parse(req.body);
@@ -34,7 +60,7 @@ const cookieName='pokelist_refresh';
 const cookieOptions={httpOnly:true,secure:env.NODE_ENV==='production',sameSite:'none' as const,path:'/api/v1/auth',maxAge:30*24*3600};
 function assertOrigin(req:FastifyRequest){
  const origin=req.headers.origin;
- if(origin!==env.CORS_ORIGIN)throw Object.assign(new Error('Invalid request origin'),{statusCode:403});
+ if(!origin||!env.CORS_ORIGIN.includes(origin))throw Object.assign(new Error('Invalid request origin'),{statusCode:403});
 }
 async function currentUser(req:FastifyRequest){
  const token=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -42,7 +68,7 @@ async function currentUser(req:FastifyRequest){
  try {
   const id=await verifyAccess(token);
   const user=await db.user.findUnique({where:{id}});
-  if(!user||!user.emailVerifiedAt)throw new Error();
+  if(!user)throw new Error();
   return user;
  }catch {throw Object.assign(new Error('Unauthorized'),{statusCode:401});}
 }
@@ -70,13 +96,15 @@ app.get('/ready',async()=>{await db.$queryRaw`SELECT 1`;return {status:'ready'};
 app.post('/api/v1/auth/register',{config:{rateLimit:{max:5,timeWindow:'1 minute'}}},async(req,reply)=>{
  const data=body(signup,req);
  if(await db.user.findUnique({where:{email:data.email}}))return reply.code(409).send({error:'EMAIL_ALREADY_REGISTERED'});
- const user=await db.user.create({data:{email:data.email,passwordHash:await argon2.hash(data.password),displayName:data.displayName}});
- const token=await createOneTime(user.id,'verify',86400000);
- try {await sendLink(user.email,'Confirme seu e-mail no PokeList','verify-email',token);}
- catch(error){req.log.error(error,'email dispatch failed');}
- return reply.code(201).send({message:'Account created. Check your email to verify.',user:publicUser(user)});
+ const user=await db.user.create({
+  data:{email:data.email,passwordHash:await argon2.hash(data.password),displayName:data.displayName,
+   emailVerifiedAt:new Date(),
+   memberships:{create:{role:'OWNER',space:{create:{name:'Meu espaço'}}}}}
+ });
+ return reply.code(201).send({message:'Account created',accessToken:await session(user.id,reply),user:publicUser(user)});
 });
-app.post('/api/v1/auth/verify-email',async(req)=>{
+app.post('/api/v1/auth/verify-email',async(req,reply)=>{
+ if(env.NODE_ENV==='production')return reply.code(410).send({error:'EMAIL_VERIFICATION_DISABLED'});
  const {token}=body(z.object({token:z.string().min(20)}),req);
  const userId=await consumeOneTime(token,'verify');
  await db.$transaction([
@@ -85,7 +113,8 @@ app.post('/api/v1/auth/verify-email',async(req)=>{
  ]);
  return {message:'Email verified'};
 });
-app.post('/api/v1/auth/resend-verification',{config:{rateLimit:{max:3,timeWindow:'1 hour'}}},async(req)=>{
+app.post('/api/v1/auth/resend-verification',{config:{rateLimit:{max:3,timeWindow:'1 hour'}}},async(req,reply)=>{
+ if(env.NODE_ENV==='production')return reply.code(410).send({error:'EMAIL_VERIFICATION_DISABLED'});
  const {email}=body(z.object({email:emailSchema}),req);
  const user=await db.user.findUnique({where:{email}});
  if(user&&!user.emailVerifiedAt){
@@ -98,7 +127,10 @@ app.post('/api/v1/auth/login',{config:{rateLimit:{max:5,timeWindow:'1 minute'}}}
  const {email,password}=body(credentials,req);
  const user=await db.user.findUnique({where:{email}});
  if(!user||!(await argon2.verify(user.passwordHash,password)))return reply.code(401).send({error:'INVALID_CREDENTIALS'});
- if(!user.emailVerifiedAt)return reply.code(403).send({error:'EMAIL_NOT_VERIFIED'});
+ // Previously registered users may not have a space because verification never completed.
+ if(!(await db.spaceMember.findFirst({where:{userId:user.id}}))) {
+  await db.space.create({data:{name:'Meu espaço',members:{create:{userId:user.id,role:'OWNER'}}}});
+ }
  return {accessToken:await session(user.id,reply),user:publicUser(user)};
 });
 app.post('/api/v1/auth/refresh',async(req,reply)=>{
@@ -109,7 +141,7 @@ app.post('/api/v1/auth/refresh',async(req,reply)=>{
  const changed=await db.session.updateMany({where:{id:existing.id,revokedAt:null},data:{revokedAt:new Date()}});
  if(changed.count!==1)return reply.code(401).send({error:'UNAUTHORIZED'});
  const user=await db.user.findUnique({where:{id:existing.userId}});
- if(!user?.emailVerifiedAt)return reply.code(401).send({error:'UNAUTHORIZED'});
+ if(!user)return reply.code(401).send({error:'UNAUTHORIZED'});
  return {accessToken:await session(user.id,reply),user:publicUser(user)};
 });
 app.post('/api/v1/auth/logout',async(req,reply)=>{
