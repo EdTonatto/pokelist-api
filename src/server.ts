@@ -68,7 +68,7 @@ async function currentUser(req:FastifyRequest){
  try {
   const id=await verifyAccess(token);
   const user=await db.user.findUnique({where:{id}});
-  if(!user||!user.emailVerifiedAt)throw new Error();
+  if(!user)throw new Error();
   return user;
  }catch {throw Object.assign(new Error('Unauthorized'),{statusCode:401});}
 }
@@ -96,13 +96,15 @@ app.get('/ready',async()=>{await db.$queryRaw`SELECT 1`;return {status:'ready'};
 app.post('/api/v1/auth/register',{config:{rateLimit:{max:5,timeWindow:'1 minute'}}},async(req,reply)=>{
  const data=body(signup,req);
  if(await db.user.findUnique({where:{email:data.email}}))return reply.code(409).send({error:'EMAIL_ALREADY_REGISTERED'});
- const user=await db.user.create({data:{email:data.email,passwordHash:await argon2.hash(data.password),displayName:data.displayName}});
- const token=await createOneTime(user.id,'verify',86400000);
- try {await sendLink(user.email,'Confirme seu e-mail no PokeList','verify-email',token);}
- catch {req.log.error({event:'mail.delivery_failed',requestId:req.id},'verification email dispatch failed');}
- return reply.code(201).send({message:'Account created. Check your email to verify.',user:publicUser(user)});
+ const user=await db.user.create({
+  data:{email:data.email,passwordHash:await argon2.hash(data.password),displayName:data.displayName,
+   emailVerifiedAt:new Date(),
+   memberships:{create:{role:'OWNER',space:{create:{name:'Meu espaço'}}}}}
+ });
+ return reply.code(201).send({message:'Account created',accessToken:await session(user.id,reply),user:publicUser(user)});
 });
-app.post('/api/v1/auth/verify-email',async(req)=>{
+app.post('/api/v1/auth/verify-email',async(req,reply)=>{
+ if(env.NODE_ENV==='production')return reply.code(410).send({error:'EMAIL_VERIFICATION_DISABLED'});
  const {token}=body(z.object({token:z.string().min(20)}),req);
  const userId=await consumeOneTime(token,'verify');
  await db.$transaction([
@@ -111,7 +113,8 @@ app.post('/api/v1/auth/verify-email',async(req)=>{
  ]);
  return {message:'Email verified'};
 });
-app.post('/api/v1/auth/resend-verification',{config:{rateLimit:{max:3,timeWindow:'1 hour'}}},async(req)=>{
+app.post('/api/v1/auth/resend-verification',{config:{rateLimit:{max:3,timeWindow:'1 hour'}}},async(req,reply)=>{
+ if(env.NODE_ENV==='production')return reply.code(410).send({error:'EMAIL_VERIFICATION_DISABLED'});
  const {email}=body(z.object({email:emailSchema}),req);
  const user=await db.user.findUnique({where:{email}});
  if(user&&!user.emailVerifiedAt){
@@ -124,7 +127,10 @@ app.post('/api/v1/auth/login',{config:{rateLimit:{max:5,timeWindow:'1 minute'}}}
  const {email,password}=body(credentials,req);
  const user=await db.user.findUnique({where:{email}});
  if(!user||!(await argon2.verify(user.passwordHash,password)))return reply.code(401).send({error:'INVALID_CREDENTIALS'});
- if(!user.emailVerifiedAt)return reply.code(403).send({error:'EMAIL_NOT_VERIFIED'});
+ // Previously registered users may not have a space because verification never completed.
+ if(!(await db.spaceMember.findFirst({where:{userId:user.id}}))) {
+  await db.space.create({data:{name:'Meu espaço',members:{create:{userId:user.id,role:'OWNER'}}}});
+ }
  return {accessToken:await session(user.id,reply),user:publicUser(user)};
 });
 app.post('/api/v1/auth/refresh',async(req,reply)=>{
@@ -135,7 +141,7 @@ app.post('/api/v1/auth/refresh',async(req,reply)=>{
  const changed=await db.session.updateMany({where:{id:existing.id,revokedAt:null},data:{revokedAt:new Date()}});
  if(changed.count!==1)return reply.code(401).send({error:'UNAUTHORIZED'});
  const user=await db.user.findUnique({where:{id:existing.userId}});
- if(!user?.emailVerifiedAt)return reply.code(401).send({error:'UNAUTHORIZED'});
+ if(!user)return reply.code(401).send({error:'UNAUTHORIZED'});
  return {accessToken:await session(user.id,reply),user:publicUser(user)};
 });
 app.post('/api/v1/auth/logout',async(req,reply)=>{
