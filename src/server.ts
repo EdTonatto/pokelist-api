@@ -99,7 +99,7 @@ app.post('/api/v1/auth/register',{config:{rateLimit:{max:5,timeWindow:'1 minute'
  const user=await db.user.create({
   data:{email:data.email,passwordHash:await argon2.hash(data.password),displayName:data.displayName,
    emailVerifiedAt:new Date(),
-   spaces:{create:{role:'OWNER',space:{create:{name:'Meu espaço'}}}}}
+   memberships:{create:{role:'OWNER',space:{create:{name:'Meu espaço'}}}}}
  });
  return reply.code(201).send({message:'Account created',accessToken:await session(user.id,reply),user:publicUser(user)});
 });
@@ -127,7 +127,10 @@ app.post('/api/v1/auth/login',{config:{rateLimit:{max:5,timeWindow:'1 minute'}}}
  const {email,password}=body(credentials,req);
  const user=await db.user.findUnique({where:{email}});
  if(!user||!(await argon2.verify(user.passwordHash,password)))return reply.code(401).send({error:'INVALID_CREDENTIALS'});
- // Email verification is temporarily disabled.
+ // Previously registered users may not have a space because verification never completed.
+ if(!(await db.spaceMember.findFirst({where:{userId:user.id}}))) {
+  await db.space.create({data:{name:'Meu espaço',members:{create:{userId:user.id,role:'OWNER'}}}});
+ }
  return {accessToken:await session(user.id,reply),user:publicUser(user)};
 });
 app.post('/api/v1/auth/refresh',async(req,reply)=>{
