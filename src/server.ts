@@ -60,7 +60,7 @@ const cookieName='pokelist_refresh';
 const cookieOptions={httpOnly:true,secure:env.NODE_ENV==='production',sameSite:'none' as const,path:'/api/v1/auth',maxAge:30*24*3600};
 function assertOrigin(req:FastifyRequest){
  const origin=req.headers.origin;
- if(origin!==env.CORS_ORIGIN)throw Object.assign(new Error('Invalid request origin'),{statusCode:403});
+ if(!origin||!env.CORS_ORIGIN.includes(origin))throw Object.assign(new Error('Invalid request origin'),{statusCode:403});
 }
 async function currentUser(req:FastifyRequest){
  const token=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
