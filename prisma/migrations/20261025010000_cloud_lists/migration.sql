@@ -1,0 +1,3 @@
+CREATE TABLE "CloudList" ("id" TEXT NOT NULL, "userId" UUID NOT NULL, "data" JSONB NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL, CONSTRAINT "CloudList_pkey" PRIMARY KEY ("id"));
+CREATE INDEX "CloudList_userId_idx" ON "CloudList"("userId");
+ALTER TABLE "CloudList" ADD CONSTRAINT "CloudList_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
