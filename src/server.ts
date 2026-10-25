@@ -52,7 +52,7 @@ app.setErrorHandler((error,request,reply)=>{
 });
 const body=<T extends z.ZodTypeAny>(schema:T,req:FastifyRequest):z.infer<T>=>schema.parse(req.body);
 const emailSchema=z.email().transform(v=>v.trim().toLowerCase());
-const signup=z.object({email:emailSchema,password:z.string().min(12).max(128),displayName:z.string().trim().min(1).max(100)});
+const signup=z.object({email:emailSchema,password:z.string().min(8).max(128),displayName:z.string().trim().min(1).max(100)});
 const credentials=z.object({email:emailSchema,password:z.string()});
 const uuid=z.uuid();
 const toDate=(ms:number)=>new Date(Date.now()+ms);
@@ -161,7 +161,7 @@ app.post('/api/v1/auth/forgot-password',{config:{rateLimit:{max:3,timeWindow:'1 
  return {message:'If registered, a password reset email was sent'};
 });
 app.post('/api/v1/auth/reset-password',async(req)=>{
- const {token,password}=body(z.object({token:z.string().min(20),password:z.string().min(12).max(128)}),req);
+ const {token,password}=body(z.object({token:z.string().min(20),password:z.string().min(8).max(128)}),req);
  const userId=await consumeOneTime(token,'reset');
  await db.$transaction([
   db.user.update({where:{id:userId},data:{passwordHash:await argon2.hash(password)}}),
