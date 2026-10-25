@@ -309,8 +309,8 @@ app.put('/api/v1/my-lists/:id',async req=>{
  if(data.id!==id || data.items.some(item=>item.wishlistId!==id)) throw Object.assign(new Error('Invalid list ID'),{statusCode:400});
  const existing=await db.cloudList.findUnique({where:{id}});
  if(existing && existing.userId!==user.id)throw Object.assign(new Error('Not found'),{statusCode:404});
- if(existing)await db.cloudList.update({where:{id},data:{data}});
- else await db.cloudList.create({data:{id,userId:user.id,data}});
+ if(existing)await db.cloudList.update({where:{id},data:{data:JSON.parse(JSON.stringify(data))}});
+ else await db.cloudList.create({data:{id,userId:user.id,data:JSON.parse(JSON.stringify(data))}});
  return data;
 });
 app.delete('/api/v1/my-lists/:id',async req=>{
