@@ -29,6 +29,7 @@ model User {
   memberships SpaceMember[]
   sessions Session[]
   tokens OneTimeToken[]
+  cloudLists CloudList[]
 }
 model Space {
   id String @id @default(uuid()) @db.Uuid
@@ -101,4 +102,13 @@ model OneTimeToken {
   createdAt DateTime @default(now())
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@index([userId, purpose])
+}
+model CloudList {
+  id String @id
+  userId String @db.Uuid
+  data Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
 }

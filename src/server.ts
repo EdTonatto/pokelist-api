@@ -287,6 +287,39 @@ app.get('/api/v1/sets/:id/cards',async req=>{
  const set=await catalog.set(id,language) as any;
  return set.cards??[];
 });
+
+const cloudListSchema=z.object({
+ id:z.uuid(), name:z.string().trim().min(1).max(120), description:z.string().max(1000).optional(),
+ type:z.enum(['collection','pokemon','theme']), purpose:z.enum(['collection','trade']).optional(),
+ coverColor:z.string().max(32).optional(),coverImage:z.string().max(500000).optional(),
+ coverPosition:z.string().max(100).optional(), coverSource:z.enum(['photo','card']).optional(),
+ setId:z.string().optional(),pokemonName:z.string().optional(),
+ createdAt:z.iso.datetime(), updatedAt:z.iso.datetime(),
+ items:z.array(z.object({id:z.uuid(),wishlistId:z.uuid()}).passthrough()).max(2000)
+});
+app.get('/api/v1/my-lists',async req=>{
+ const user=await currentUser(req);
+ const records=await db.cloudList.findMany({where:{userId:user.id},orderBy:{updatedAt:'desc'}});
+ return records.map(record=>record.data);
+});
+app.put('/api/v1/my-lists/:id',async req=>{
+ const user=await currentUser(req);
+ const id=uuid.parse((req.params as {id:string}).id);
+ const data=body(cloudListSchema,req);
+ if(data.id!==id || data.items.some(item=>item.wishlistId!==id)) throw Object.assign(new Error('Invalid list ID'),{statusCode:400});
+ const existing=await db.cloudList.findUnique({where:{id}});
+ if(existing && existing.userId!==user.id)throw Object.assign(new Error('Not found'),{statusCode:404});
+ if(existing)await db.cloudList.update({where:{id},data:{data:JSON.parse(JSON.stringify(data))}});
+ else await db.cloudList.create({data:{id,userId:user.id,data:JSON.parse(JSON.stringify(data))}});
+ return data;
+});
+app.delete('/api/v1/my-lists/:id',async req=>{
+ const user=await currentUser(req);
+ const id=uuid.parse((req.params as {id:string}).id);
+ await db.cloudList.deleteMany({where:{id,userId:user.id}});
+ return {deleted:true};
+});
+
 async function shutdown(){await app.close();await db.$disconnect();await closeCache();}
 process.once('SIGINT',()=>void shutdown());
 process.once('SIGTERM',()=>void shutdown());
